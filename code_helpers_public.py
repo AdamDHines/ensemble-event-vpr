@@ -1,8 +1,9 @@
-import cv2
+import cv2, os, json
 import numpy as np
 from os.path import join, isfile, basename, abspath
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from pathlib import Path
 
 
 def compare_images(image_paths1, image_paths2, image_num1, image_num2):
@@ -48,6 +49,94 @@ def get_timestamp_matches(timestamps, timestamps_to_match):
     timestamps_matched = np.array([np.abs(timestamps - ts).argmin() for ts in timestamps_to_match])
     return timestamps_matched
 
+
+def get_image_paths(folder1):
+    return sorted([os.path.join(folder1, f) for f in os.listdir(folder1) if f.endswith('.png')])
+
+def load_e2vid_abs_times(metadata_json_path, timestamps_txt_path):
+    """Return absolute frame times (seconds) from metadata.json + e2vid timestamps.txt."""
+    with open(metadata_json_path, 'r') as f:
+        md = json.load(f)
+    if 'start_time_ns' not in md:
+        raise KeyError(f"{metadata_json_path} missing 'start_time_ns'")
+    start_s = float(md['start_time_ns']) * 1e-9
+    # timestamps.txt contains per-frame times in seconds (E2VID output)
+    ts = np.loadtxt(timestamps_txt_path, dtype=float)
+    abs_ts = start_s + ts
+    if not np.all(np.diff(abs_ts) >= 0):
+        abs_ts = np.sort(abs_ts)
+    return abs_ts
+
+# --- helpers ---
+def _abs_times_for_dir(frames_dir: str) -> np.ndarray:
+    ts_path   = os.path.join(frames_dir, 'timestamps.txt')
+    meta_path = os.path.join(Path(frames_dir).parent, 'metadata.json')
+    ts = load_e2vid_abs_times(str(meta_path), str(ts_path))  # seconds, sorted
+    return ts.astype(float)
+
+def _pair_canonical(q_times: np.ndarray, r_times: np.ndarray, max_dt: float):
+    """
+    Robust time pairing between two streams:
+      1) fit linear map r ≈ a*q + b,
+      2) nearest-neighbour under a cadence-based tolerance,
+      3) enforce monotonicity,
+      4) one fallback with a looser tol.
+    Returns (t_q, t_r) with equal length.
+    """
+    q = np.asarray(q_times, float)
+    r = np.asarray(r_times, float)
+    if q.size == 0 or r.size == 0:
+        return q[:0], r[:0]
+    q.sort(); r.sort()
+
+    # --- 1) linear time map r ≈ a*q + b (handles different window cadences) ---
+    if q[-1] > q[0]:
+        a = (r[-1] - r[0]) / (q[-1] - q[0])
+    else:
+        a = 1.0
+    b = r[0] - a * q[0]
+    r_pred = a * q + b
+
+    # cadence-based tolerance (use median step); don’t trust tiny fixed max_dt
+    dq = (np.median(np.diff(q)) if q.size > 1 else max_dt)
+    dr = (np.median(np.diff(r)) if r.size > 1 else max_dt)
+    tol = max(max_dt, 0.6 * max(dq, dr))
+
+    def _nn_monotonic(q_hat, r_arr, tol_):
+        idx = np.searchsorted(r_arr, q_hat, side='left')
+        best = np.full(q_hat.size, -1, dtype=int)
+        for i, (t, j) in enumerate(zip(q_hat, idx)):
+            c = []
+            if j > 0:           c.append(j - 1)
+            if j < r_arr.size:  c.append(j)
+            if not c:           continue
+            c = np.asarray(c, int)
+            k = int(c[np.argmin(np.abs(r_arr[c] - t))])
+            if abs(r_arr[k] - t) <= tol_:
+                best[i] = k
+        # monotonic non-decreasing
+        out = np.full_like(best, -1)
+        prev = -1
+        for i, j in enumerate(best):
+            if j < 0: continue
+            if j >= prev:
+                out[i] = j; prev = j
+            elif prev >= 0 and abs(r_arr[prev] - q_hat[i]) <= tol_:
+                out[i] = prev
+        valid = out >= 0
+        return valid, out
+
+    # --- 2) NN + monotonic with cadence tol ---
+    valid, out = _nn_monotonic(r_pred, r, tol)
+
+    # --- 3) fallback once with looser tol if empty ---
+    if not np.any(valid):
+        tol2 = max(tol * 2.0, 1.5 * max(dq, dr), 0.25)
+        valid, out = _nn_monotonic(r_pred, r, tol2)
+        if not np.any(valid):
+            return q[:0], r[:0]
+
+    return q[valid], r[out[valid]]
 
 class ListOnDemand(object):
     def __init__(self):
