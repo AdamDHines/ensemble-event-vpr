@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from os.path import join, isfile, basename, abspath
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 def compare_images(image_paths1, image_paths2, image_num1, image_num2):
