@@ -1,7 +1,6 @@
 import cv2, os, json
 import numpy as np
 from os.path import join, isfile, basename, abspath
-import matplotlib.pyplot as plt
 from tqdm import tqdm
 from pathlib import Path
 
