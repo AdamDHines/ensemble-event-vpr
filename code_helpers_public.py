@@ -55,17 +55,6 @@ def get_timestamp_matches(timestamps, timestamps_to_match):
     timestamps_matched = np.array([np.abs(timestamps - ts).argmin() for ts in timestamps_to_match])
     return timestamps_matched
 
-def _dir_to_paths(d: str):
-    return get_image_paths(d)
-
-def _project_pair_to_canonical(q_dir, r_dir, t_can_q, t_can_r, off_q=0.0, off_r=0.0):
-    ts_q = _abs_times_for_dir(q_dir) + off_q
-    ts_r = _abs_times_for_dir(r_dir) + off_r
-    matches_q = get_timestamp_matches(ts_q, t_can_q)
-    matches_r = get_timestamp_matches(ts_r, t_can_r)
-    iq, ir = get_image_sets_on_demand(_dir_to_paths(q_dir), _dir_to_paths(r_dir), matches_q, matches_r)
-    return iq, ir
-
 def get_image_paths(folder1):
     return sorted([os.path.join(folder1, f) for f in os.listdir(folder1) if f.endswith('.png')])
 

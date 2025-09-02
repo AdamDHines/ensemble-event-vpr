@@ -1,30 +1,29 @@
 '''
 Imports
 '''
-import os, argparse, sys, glob, scipy, torch
+import os, argparse, glob, torch
 
 import numpy as np
-import torch.nn.functional as F
+import code_helpers_public as chp 
 
 from tqdm import tqdm
 from read_gps import get_gps
 from correspondence_event_camera_frame_camera import traverse_to_name, video_beginning
-from code_helpers_public import build_model, get_timestamp_matches, get_image_sets_on_demand, get_vlad_features, get_image_paths, _abs_times_for_dir, _pair_canonical
 
 def main():
     parser = argparse.ArgumentParser()
 
     # Input arguments
     parser.add_argument('--dataset', '-ds', type=str, help='Dataset name',
-                        default="brisbane_event")
+                        default="qcr_event")
     parser.add_argument('--reference', '-r', type=str, help='Reference traverse name',
-                        default="sunset2")
+                        default="traverse1")
     parser.add_argument('--query', '-q', type=str, help='Query traverse name',
-                        default="sunset1")
+                        default="traverse2")
     parser.add_argument('--window_duration', '-w', type=list, help='Fixed window duration in ms',
-                        default=[88, 120, 140])
+                        default=[44, 66, 88, 120, 140])
     parser.add_argument('--num_events_per_pixel', '-n', type=list, help='Number of events per pixel',
-                        default=[0.4, 0.6, 0.8])
+                        default=[0.1, 0.2, 0.4, 0.6, 0.8])
     parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
                         default=False)
     parser.add_argument('--gps_format', type=str, help='GPS format (nmea or kml)',
@@ -40,7 +39,7 @@ def main():
     
     # Parse the arguments
     args = parser.parse_args()
-    args.gps_available = True
+
     # Get the reference and query directories for time windows and number of events per pixel
     reference_window_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{timewindow}',f'{args.frames_subfolder}') for timewindow in args.window_duration]
     reference_count_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{num_events_per_pixel}',f'{args.frames_subfolder}') for num_events_per_pixel in args.num_events_per_pixel]
@@ -59,10 +58,10 @@ def main():
     query_paths = {}
 
     for subfolder in reference_combined_dirs:
-        reference_paths[subfolder] = get_image_paths(os.path.join(args.dataset_folder, subfolder))
+        reference_paths[subfolder] = chp.get_image_paths(os.path.join(args.dataset_folder, subfolder))
 
     for subfolder in query_combined_dirs:
-        query_paths[subfolder] = get_image_paths(os.path.join(args.dataset_folder, subfolder))
+        query_paths[subfolder] = chp.get_image_paths(os.path.join(args.dataset_folder, subfolder))
     
     # Initialize dictionaries to hold the final aligned and lazy-loaded image sets
     images_all_combined_set1 = {}
@@ -112,10 +111,7 @@ def main():
     else:
         print("GPS not available. Proceeding with time-based anchor alignment.")
     
-    # --- UNIFIED CANONICAL TIMELINE CREATION ---
     # Both paths (GPS and non-GPS) now converge here to create the final timeline.
-    
-    # 1. Select a reliable "anchor" data variant to provide the dense timestamps.
     if not args.window_duration:
          raise ValueError("Alignment requires at least one --window_duration to be specified as an anchor.")
     anchor_param = args.window_duration[0]
@@ -132,8 +128,8 @@ def main():
     print(f"Using reconstruction parameter '{anchor_param}' as the time anchor.")
     
     # 2. Get the dense, absolute timestamps from the anchor image sets
-    q_times_anchor = _abs_times_for_dir(q_anchor_dir)
-    r_times_anchor = _abs_times_for_dir(r_anchor_dir)
+    q_times_anchor = chp._abs_times_for_dir(q_anchor_dir)
+    r_times_anchor = chp._abs_times_for_dir(r_anchor_dir)
 
     # 3. Apply the pre-calculated time offsets (they are 0.0 if GPS was not used)
     q_times_synced = q_times_anchor + off_q
@@ -141,14 +137,11 @@ def main():
     
     # 4. Use the robust _pair_canonical function on the now-synchronized dense timelines
     max_dt = getattr(args, 'max_dt', 0.06)
-    timestamps_canon_query, timestamps_canon_ref = _pair_canonical(q_times_synced, r_times_synced, max_dt)
+    timestamps_canon_query, timestamps_canon_ref = chp._pair_canonical(q_times_synced, r_times_synced, max_dt)
     
     if len(timestamps_canon_query) == 0:
         raise RuntimeError("Anchor alignment failed. No matching timestamps found. Check data or increase max_dt.")
 
-    # =================================================================================
-    # ### GLOBAL PROJECTION STEP (Now Correct for Both Paths) ###
-    # =================================================================================
     print(f"Projecting all data variants onto the canonical timeline of length {len(timestamps_canon_query)}...")
 
     all_query_dirs = query_window_dirs + query_count_dirs
@@ -163,13 +156,13 @@ def main():
     reference_window_dirs = [d.replace(".", "_") for d in reference_window_dirs]
 
     for q_dir, r_dir in zip(all_query_dirs, all_ref_dirs):
-        ts_q = _abs_times_for_dir(q_dir) + off_q # Apply offsets here too for consistency
-        ts_r = _abs_times_for_dir(r_dir) + off_r
+        ts_q = chp._abs_times_for_dir(q_dir) + off_q # Apply offsets here too for consistency
+        ts_r = chp._abs_times_for_dir(r_dir) + off_r
 
-        matches_q = get_timestamp_matches(ts_q, timestamps_canon_query)
-        matches_r = get_timestamp_matches(ts_r, timestamps_canon_ref)
+        matches_q = chp.get_timestamp_matches(ts_q, timestamps_canon_query)
+        matches_r = chp.get_timestamp_matches(ts_r, timestamps_canon_ref)
 
-        iq, ir = get_image_sets_on_demand(
+        iq, ir = chp.get_image_sets_on_demand(
             query_paths[q_dir],
             reference_paths[r_dir],
             matches_q,
@@ -207,7 +200,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    model, tfm = build_model(num_clusters=num_clusters, device=device, add_wpca=True, netvlad_folder=args.netvlad_folder)
+    model, _ = chp.build_model(num_clusters=num_clusters, device=device, add_wpca=True, netvlad_folder=args.netvlad_folder)
 
     with tqdm(total=len(all_pairs), position=0, leave=True, desc="Processing Pairs") as pbar:
         for q_dir, r_dir in all_pairs:
@@ -227,7 +220,7 @@ def main():
             f1_path = os.path.join(pair_dir, "netvlad_features_all_set1.npy")
             f2_path = os.path.join(pair_dir, "netvlad_features_all_set2.npy")
             
-            features_q = get_vlad_features(
+            features_q = chp.get_vlad_features(
                                             model,
                                             images_set=imgs_q,        
                                             save_name=f1_path,             
@@ -238,7 +231,7 @@ def main():
                                             target_size=(480, 640),         
                                             mmap_safely=True,                 
                                         )
-            features_r = get_vlad_features(
+            features_r = chp.get_vlad_features(
                                             model,
                                             images_set=imgs_r,                 
                                             save_name=f2_path,                 
