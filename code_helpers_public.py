@@ -1,4 +1,4 @@
-import cv2, os, json, sys
+import cv2, os, json, sys, ast, re
 import numpy as np
 from os.path import join, isfile, basename, abspath
 from tqdm import tqdm
@@ -8,9 +8,117 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models import vgg16, VGG16_Weights
 import torch.nn.functional as F
+import argparse
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+_INT_RE = re.compile(r'^[+-]?\d+$')   # integer literal (no decimal, no exponent)
+_FLOAT_RE = re.compile(r'^[+-]?(?:\d+\.\d*|\.\d+|\d+([eE][+-]?\d+))$')  # basic float/exponent
+
+def _parse_numeric_token(token):
+    """
+    Parse a single token string into int or float, preserving ints.
+    Raises argparse.ArgumentTypeError on failure.
+    """
+    t = token.strip()
+    if not t:
+        raise argparse.ArgumentTypeError("Empty numeric token")
+    # Plain integer like "500" or "-42"
+    if _INT_RE.match(t):
+        try:
+            return int(t)
+        except ValueError:
+            pass
+    # Float-like tokens, including exponent forms like "1e3" or "3.14" or "300.0"
+    try:
+        # Try float conversion as fallback (handles exponents)
+        val = float(t)
+        # If float is integral and token looked like an integer with trailing .0,
+        # we only keep float if user wrote decimals or exponent. Preserve int only for pure integer tokens.
+        if _INT_RE.match(t):
+            return int(val)
+        return val
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Invalid numeric token: {token!r}")
+
+def _parse_number_list_string(s):
+    """
+    Parse a single string token which may be:
+      - a python list literal: "[500, 1000]" -> preserves ints/floats from literal
+      - a csv: "500,1000"
+      - a single number: "500" or "3.14" or "1e3"
+    Returns: list of ints/floats preserving integer type when input is integer.
+    """
+    s = s.strip()
+    if not s:
+        return []
+    # python list literal (must both start and end with bracket)
+    if s.startswith('[') and s.endswith(']'):
+        try:
+            v = ast.literal_eval(s)
+        except Exception as e:
+            raise argparse.ArgumentTypeError(f"Invalid python list literal: {e}")
+        if not isinstance(v, (list, tuple)):
+            raise argparse.ArgumentTypeError("Expected a list/tuple literal")
+        parsed = []
+        for x in v:
+            if isinstance(x, int):
+                parsed.append(x)
+            elif isinstance(x, float):
+                # If the literal was 300.0 it will be float; keep as float.
+                parsed.append(x)
+            else:
+                # If it's a numeric string inside list: try parse it
+                parsed.append(_parse_numeric_token(str(x)))
+        return parsed
+    # CSV: "500,1000" or "500, 1000"
+    if ',' in s:
+        tokens = [tok.strip() for tok in s.split(',') if tok.strip()]
+        return [_parse_numeric_token(tok) for tok in tokens]
+    # single numeric token
+    return [_parse_numeric_token(s)]
+
+class ListOrLiteral(argparse.Action):
+    """
+    Robust argparse Action that always puts a Python list on the namespace, preserving ints.
+    Supports:
+      - multiple separate tokens:  -w 500 1000
+      - a single quoted python-list token: -w "[500, 1000]"
+      - a single quoted csv token: -w "500,1000"
+      - shell-split bracket tokens: -w [500, 1000] (passed as ['[500,', '1000]'])
+    """
+    def __call__(self, parser, namespace, values, option_string=None):
+        # values will be a list when nargs='+'.
+        # Examples:
+        #   ['500', '1000']
+        #   ['[500,', '1000]']  (shell split)
+        #   ['[500,1000]']      (single token)
+        #   ['500,1000']        (single token CSV)
+        if isinstance(values, list):
+            if len(values) > 1:
+                # Try joining — covers shell-split bracket tokens like ['[500,', '1000]']
+                joined = ' '.join(values).strip()
+                if joined.startswith('[') and joined.endswith(']'):
+                    try:
+                        result = _parse_number_list_string(joined)
+                    except argparse.ArgumentTypeError:
+                        # fall back to parsing tokens individually
+                        result = [_parse_numeric_token(v) for v in values]
+                else:
+                    # tokens are likely separate numeric tokens: parse each preserving ints
+                    try:
+                        result = [_parse_numeric_token(v) for v in values]
+                    except argparse.ArgumentTypeError:
+                        # fallback: try parsing joined as CSV or literal
+                        result = _parse_number_list_string(joined)
+            else:
+                # single token: could be "[500,1000]" or "500,1000" or "500"
+                result = _parse_number_list_string(values[0])
+        else:
+            # unlikely with nargs='+', but handle anyway
+            result = _parse_number_list_string(values)
+        setattr(namespace, self.dest, result)
 
 def compare_images(image_paths1, image_paths2, image_num1, image_num2):
     if isinstance(image_paths1[image_num1], np.ndarray):

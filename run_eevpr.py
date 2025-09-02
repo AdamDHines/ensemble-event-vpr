@@ -20,9 +20,9 @@ def main():
                         default="traverse1")
     parser.add_argument('--query', '-q', type=str, help='Query traverse name',
                         default="traverse2")
-    parser.add_argument('--window_duration', '-w', type=list, help='Fixed window duration in ms',
+    parser.add_argument('--window_duration', '-w', action=chp.ListOrLiteral, nargs='+', help='Fixed window duration in ms',
                         default=[44, 66, 88, 120, 140])
-    parser.add_argument('--num_events_per_pixel', '-n', type=list, help='Number of events per pixel',
+    parser.add_argument('--num_events_per_pixel', '-n', action=chp.ListOrLiteral, nargs='+', help='Number of events per pixel',
                         default=[0.1, 0.2, 0.4, 0.6, 0.8])
     parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
                         default=False)
@@ -40,6 +40,9 @@ def main():
     # Parse the arguments
     args = parser.parse_args()
 
+    # Replace all "." with. "_" for num_events_per_pixel
+    args.num_events_per_pixel = [str(x).replace(".", "_") for x in args.num_events_per_pixel]
+
     # Get the reference and query directories for time windows and number of events per pixel
     reference_window_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{timewindow}',f'{args.frames_subfolder}') for timewindow in args.window_duration]
     reference_count_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{num_events_per_pixel}',f'{args.frames_subfolder}') for num_events_per_pixel in args.num_events_per_pixel]
@@ -49,19 +52,15 @@ def main():
     query_count_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.query}',f'{args.query}-{args.frames_subfolder}-{num_events_per_pixel}',f'{args.frames_subfolder}') for num_events_per_pixel in args.num_events_per_pixel]
     query_combined_dirs = query_window_dirs + query_count_dirs
 
-    # Replace all instances of strings in combined dirs with "." with "_" to ensure valid paths
-    reference_combined_dirs = [d.replace(".", "_") for d in reference_combined_dirs]
-    query_combined_dirs = [d.replace(".", "_") for d in query_combined_dirs]
-
     # Get the image paths for both reference and query directories
     reference_paths = {}
     query_paths = {}
 
     for subfolder in reference_combined_dirs:
-        reference_paths[subfolder] = chp.get_image_paths(os.path.join(args.dataset_folder, subfolder))
+        reference_paths[subfolder] = chp.get_image_paths(subfolder)
 
     for subfolder in query_combined_dirs:
-        query_paths[subfolder] = chp.get_image_paths(os.path.join(args.dataset_folder, subfolder))
+        query_paths[subfolder] = chp.get_image_paths(subfolder)
     
     # Initialize dictionaries to hold the final aligned and lazy-loaded image sets
     images_all_combined_set1 = {}
@@ -118,10 +117,6 @@ def main():
     q_anchor_dir = os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.query}',f'{args.query}-{args.frames_subfolder}-{anchor_param}',f'{args.frames_subfolder}')
     r_anchor_dir = os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{anchor_param}',f'{args.frames_subfolder}')
 
-    # replace all instances of strings in anchor dirs with "." with "_" to ensure valid paths
-    q_anchor_dir = q_anchor_dir.replace(".", "_")
-    r_anchor_dir = r_anchor_dir.replace(".", "_")
-
     if not os.path.isdir(q_anchor_dir) or not os.path.isdir(r_anchor_dir):
         raise FileNotFoundError(f"Anchor directories not found for alignment: {q_anchor_dir} | {r_anchor_dir}")
 
@@ -146,14 +141,6 @@ def main():
 
     all_query_dirs = query_window_dirs + query_count_dirs
     all_ref_dirs = reference_window_dirs + reference_count_dirs
-
-    # Remove any instances of "." in directory names to ensure valid paths
-    all_query_dirs = [d.replace(".", "_") for d in all_query_dirs]
-    all_ref_dirs = [d.replace(".", "_") for d in all_ref_dirs]
-    query_count_dirs = [d.replace(".", "_") for d in query_count_dirs]
-    query_window_dirs = [d.replace(".", "_") for d in query_window_dirs]
-    reference_count_dirs = [d.replace(".", "_") for d in reference_count_dirs]
-    reference_window_dirs = [d.replace(".", "_") for d in reference_window_dirs]
 
     for q_dir, r_dir in zip(all_query_dirs, all_ref_dirs):
         ts_q = chp._abs_times_for_dir(q_dir) + off_q # Apply offsets here too for consistency
