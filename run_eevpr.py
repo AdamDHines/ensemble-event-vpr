@@ -1,16 +1,15 @@
 '''
 Imports
 '''
-import os, argparse, sys, glob, scipy
+import os, argparse, sys, glob, scipy, torch
 
 import numpy as np
-import tensorflow as tf
+import torch.nn.functional as F
 
 from tqdm import tqdm
-from pathlib import Path
 from read_gps import get_gps
 from correspondence_event_camera_frame_camera import traverse_to_name, video_beginning
-from code_helpers_public import get_timestamp_matches, get_image_sets_on_demand, get_vlad_features, get_image_paths, _abs_times_for_dir, _pair_canonical
+from code_helpers_public import build_model, get_timestamp_matches, get_image_sets_on_demand, get_vlad_features, get_image_paths, _abs_times_for_dir, _pair_canonical
 
 def main():
     parser = argparse.ArgumentParser()
@@ -23,9 +22,9 @@ def main():
     parser.add_argument('--query', '-q', type=str, help='Query traverse name',
                         default="sunset1")
     parser.add_argument('--window_duration', '-w', type=list, help='Fixed window duration in ms',
-                        default=[66, 88, 120, 140])
+                        default=[88, 120, 140])
     parser.add_argument('--num_events_per_pixel', '-n', type=list, help='Number of events per pixel',
-                        default=[66, 88, 120, 140])
+                        default=[0.4, 0.6, 0.8])
     parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
                         default=False)
     parser.add_argument('--gps_format', type=str, help='GPS format (nmea or kml)',
@@ -35,17 +34,13 @@ def main():
     parser.add_argument('--dataset_folder', '-d', type=str, help='Path to dataset folder',
                         default="/media/adam/vprdatasets/data/event-datasets")
     parser.add_argument('--netvlad_folder', '-nv', type=str, help='Path to NetVLAD folder',
-                        default="/home/adam/repo/netvlad_tf_open")
+                        default="/home/adam/repo/pytorch-NetVlad")
     parser.add_argument('--frames_subfolder', type=str, help='Subfolder name for frames',
                         default='reconstruction')
     
     # Parse the arguments
     args = parser.parse_args()
     args.gps_available = True
-    # Append NetVLAD folder to system path
-    sys.path.append(os.path.join(args.netvlad_folder, 'python'))
-    import netvlad_tf.nets as nets
-
     # Get the reference and query directories for time windows and number of events per pixel
     reference_window_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{timewindow}',f'{args.frames_subfolder}') for timewindow in args.window_duration]
     reference_count_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{num_events_per_pixel}',f'{args.frames_subfolder}') for num_events_per_pixel in args.num_events_per_pixel]
@@ -54,6 +49,10 @@ def main():
     query_window_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.query}',f'{args.query}-{args.frames_subfolder}-{timewindow}',f'{args.frames_subfolder}') for timewindow in args.window_duration]
     query_count_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.query}',f'{args.query}-{args.frames_subfolder}-{num_events_per_pixel}',f'{args.frames_subfolder}') for num_events_per_pixel in args.num_events_per_pixel]
     query_combined_dirs = query_window_dirs + query_count_dirs
+
+    # Replace all instances of strings in combined dirs with "." with "_" to ensure valid paths
+    reference_combined_dirs = [d.replace(".", "_") for d in reference_combined_dirs]
+    query_combined_dirs = [d.replace(".", "_") for d in query_combined_dirs]
 
     # Get the image paths for both reference and query directories
     reference_paths = {}
@@ -68,8 +67,6 @@ def main():
     # Initialize dictionaries to hold the final aligned and lazy-loaded image sets
     images_all_combined_set1 = {}
     images_all_combined_set2 = {}
-    matches_fixedlength_combined1 = {}
-    matches_fixedlength_combined2 = {}
 
     # Initialize time offsets. These will be calculated if GPS is available.
     off_q, off_r = 0.0, 0.0
@@ -125,6 +122,10 @@ def main():
     q_anchor_dir = os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.query}',f'{args.query}-{args.frames_subfolder}-{anchor_param}',f'{args.frames_subfolder}')
     r_anchor_dir = os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{anchor_param}',f'{args.frames_subfolder}')
 
+    # replace all instances of strings in anchor dirs with "." with "_" to ensure valid paths
+    q_anchor_dir = q_anchor_dir.replace(".", "_")
+    r_anchor_dir = r_anchor_dir.replace(".", "_")
+
     if not os.path.isdir(q_anchor_dir) or not os.path.isdir(r_anchor_dir):
         raise FileNotFoundError(f"Anchor directories not found for alignment: {q_anchor_dir} | {r_anchor_dir}")
 
@@ -153,6 +154,14 @@ def main():
     all_query_dirs = query_window_dirs + query_count_dirs
     all_ref_dirs = reference_window_dirs + reference_count_dirs
 
+    # Remove any instances of "." in directory names to ensure valid paths
+    all_query_dirs = [d.replace(".", "_") for d in all_query_dirs]
+    all_ref_dirs = [d.replace(".", "_") for d in all_ref_dirs]
+    query_count_dirs = [d.replace(".", "_") for d in query_count_dirs]
+    query_window_dirs = [d.replace(".", "_") for d in query_window_dirs]
+    reference_count_dirs = [d.replace(".", "_") for d in reference_count_dirs]
+    reference_window_dirs = [d.replace(".", "_") for d in reference_window_dirs]
+
     for q_dir, r_dir in zip(all_query_dirs, all_ref_dirs):
         ts_q = _abs_times_for_dir(q_dir) + off_q # Apply offsets here too for consistency
         ts_r = _abs_times_for_dir(r_dir) + off_r
@@ -176,20 +185,6 @@ def main():
     overall_data_dir = os.path.join(args.dataset_folder, "overall_data", comparison_id)
     os.makedirs(overall_data_dir, exist_ok=True)
 
-    # Init TF graph/session
-    tf.compat.v1.disable_eager_execution(); tf.compat.v1.reset_default_graph()
-    image_batch = tf.compat.v1.placeholder(dtype=tf.float32, shape=[None, None, None, 3])
-    net_out = nets.vgg16NetvladPca(image_batch)
-    saver = tf.compat.v1.train.Saver()
-
-    gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.5, allow_growth=True)
-    config = tf.compat.v1.ConfigProto(inter_op_parallelism_threads=1, intra_op_parallelism_threads=1, gpu_options=gpu_options, allow_soft_placement=True)
-    config.log_device_placement = True
-    TF_ENABLE_GARBAGE_COLLECTION = True
-    sess = tf.compat.v1.Session(config=config)
-    saver.restore(sess, nets.defaultCheckpoint())
-    print("NetVLAD ready")
-
     def _safe_pair_dir(q_dir: str, r_dir: str) -> str:
         q_rel = os.path.relpath(q_dir, args.dataset_folder).replace(os.sep, "__")
         r_rel = os.path.relpath(r_dir, args.dataset_folder).replace(os.sep, "__")
@@ -203,7 +198,17 @@ def main():
                 list(zip(query_count_dirs,  reference_count_dirs))
 
     print(f"Starting combined feature extraction and ensembling for {len(all_pairs)} pairs...")
-    
+    # Define the model
+    num_clusters=64
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
+    model, tfm = build_model(num_clusters=num_clusters, device=device, add_wpca=True, netvlad_folder=args.netvlad_folder)
+
     with tqdm(total=len(all_pairs), position=0, leave=True, desc="Processing Pairs") as pbar:
         for q_dir, r_dir in all_pairs:
             # --- 1. Get image sets for the current pair ---
@@ -222,15 +227,40 @@ def main():
             f1_path = os.path.join(pair_dir, "netvlad_features_all_set1.npy")
             f2_path = os.path.join(pair_dir, "netvlad_features_all_set2.npy")
             
-            features_q = get_vlad_features(sess, net_out, image_batch, imgs_q, f1_path)
-            features_r = get_vlad_features(sess, net_out, image_batch, imgs_r, f2_path)
+            features_q = get_vlad_features(
+                                            model,
+                                            images_set=imgs_q,        
+                                            save_name=f1_path,             
+                                            batch_size=16,
+                                            num_workers=4,
+                                            tqdm_position=1,
+                                            device=None,                
+                                            target_size=(480, 640),         
+                                            mmap_safely=True,                 
+                                        )
+            features_r = get_vlad_features(
+                                            model,
+                                            images_set=imgs_r,                 
+                                            save_name=f2_path,                 
+                                            batch_size=16,
+                                            num_workers=4,
+                                            tqdm_position=1,
+                                            device=None,                   
+                                            target_size=(480, 640),          
+                                            mmap_safely=True,                  
+                                        )
 
-            # --- 3. Compute the temporary distance matrix ---
-            # This matrix ('D') exists only within this loop iteration.
-            D = scipy.spatial.distance.cdist(
-                features_q, features_r, metric="cosine"
-            ).T
+            tq = torch.as_tensor(features_q, device=device, dtype=torch.float32)
+            tr = torch.as_tensor(features_r, device=device, dtype=torch.float32)
 
+            D = (1 - (tq @ tr.T)).T.cpu().numpy()   # shape (Nr, Nq) as before
+
+            del tq, tr
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            elif device.type == "mps":
+                torch.mps.empty_cache()
+                
             # Sanity check the shape
             assert D.shape == (len(imgs_r), len(imgs_q)), \
                 f"Distance shape mismatch for pair {os.path.basename(r_dir)} vs {os.path.basename(q_dir)}"
@@ -250,7 +280,7 @@ def main():
                 ensemble_matrix += D
                 num_matrices_in_ensemble += 1
                 pbar.set_postfix_str(f"Added matrix #{num_matrices_in_ensemble} to ensemble")
-            
+
             pbar.update(1)
 
     # --- 5. Finalize the ensemble ---
@@ -263,10 +293,7 @@ def main():
 
     # Cast back to standard float32 for the final output
     final_ensemble_matrix = ensemble_matrix.astype(np.float32)
-    import matplotlib.pyplot as plt
-    plt.imshow(final_ensemble_matrix)
-    plt.colorbar()
-    plt.show()
+
     return final_ensemble_matrix
     
 if __name__ == "__main__":
