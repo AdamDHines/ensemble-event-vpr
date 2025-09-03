@@ -236,6 +236,10 @@ def main():
 
             D = (1 - (tq @ tr.T)).T.cpu().numpy()   # shape (Nr, Nq) as before
 
+            # Save the intemerdiate distance matrix for this pair with unique name
+            D_path = os.path.join(args.outdir, f"distance_{os.path.basename(r_dir)}_vs_{os.path.basename(q_dir)}.npy") 
+            np.save(D_path, D)
+
             del tq, tr
             if device.type == "cuda":
                 torch.cuda.empty_cache()
