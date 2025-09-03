@@ -26,8 +26,7 @@ def main():
                         default=[0.2, 0.4, 0.6, 0.8])
     parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
                         default=False)
-    parser.add_argument('--gps_format', type=str, help='GPS format (nmea or kml)',
-                        required=True)
+    parser.add_argument('--gps_format', type=str, help='GPS format')
     
     # Directories
     parser.add_argument('--dataset_folder', '-d', type=str, help='Path to dataset folder',
