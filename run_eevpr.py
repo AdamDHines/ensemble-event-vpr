@@ -169,7 +169,7 @@ def main():
     def _safe_pair_dir(q_dir: str, r_dir: str) -> str:
         q_rel = os.path.relpath(q_dir, args.dataset_folder).replace(os.sep, "__")
         r_rel = os.path.relpath(r_dir, args.dataset_folder).replace(os.sep, "__")
-        return os.path.join(overall_data_dir, "pairs", f"{q_rel}__VS__{r_rel}")
+        return f"{q_rel}__VS__{r_rel}", os.path.join(overall_data_dir, "pairs", f"{q_rel}__VS__{r_rel}")
 
     ensemble_matrix = None
     num_matrices_in_ensemble = 0
@@ -203,7 +203,7 @@ def main():
                 continue
 
             # --- 2. Extract features for the current pair ---
-            pair_dir = _safe_pair_dir(q_dir, r_dir)
+            unique_id, pair_dir = _safe_pair_dir(q_dir, r_dir)
             os.makedirs(pair_dir, exist_ok=True)
             f1_path = os.path.join(pair_dir, "netvlad_features_all_set1.npy")
             f2_path = os.path.join(pair_dir, "netvlad_features_all_set2.npy")
@@ -237,7 +237,7 @@ def main():
             D = (1 - (tq @ tr.T)).T.cpu().numpy()   # shape (Nr, Nq) as before
 
             # Save the intemerdiate distance matrix for this pair with unique name
-            D_path = os.path.join(args.outdir, f"distance_{os.path.basename(r_dir)}_vs_{os.path.basename(q_dir)}.npy") 
+            D_path = os.path.join(args.outdir, f'{unique_id}.npy') 
             np.save(D_path, D)
 
             del tq, tr
