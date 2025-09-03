@@ -15,27 +15,29 @@ def main():
 
     # Input arguments
     parser.add_argument('--dataset', '-ds', type=str, help='Dataset name',
-                        default="qcr_event")
+                        required=True)
     parser.add_argument('--reference', '-r', type=str, help='Reference traverse name',
-                        default="traverse1")
+                        required=True)
     parser.add_argument('--query', '-q', type=str, help='Query traverse name',
-                        default="traverse2")
+                        required=True)
     parser.add_argument('--window_duration', '-w', action=chp.ListOrLiteral, nargs='+', help='Fixed window duration in ms',
-                        default=[44, 66, 88, 120, 140])
+                        default=[250, 500, 750, 1000])
     parser.add_argument('--num_events_per_pixel', '-n', action=chp.ListOrLiteral, nargs='+', help='Number of events per pixel',
-                        default=[0.1, 0.2, 0.4, 0.6, 0.8])
+                        default=[0.2, 0.4, 0.6, 0.8])
     parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
                         default=False)
     parser.add_argument('--gps_format', type=str, help='GPS format (nmea or kml)',
-                        default='nmea')
+                        required=True)
     
     # Directories
     parser.add_argument('--dataset_folder', '-d', type=str, help='Path to dataset folder',
-                        default="/media/adam/vprdatasets/data/event-datasets")
+                        required=True)
     parser.add_argument('--netvlad_folder', '-nv', type=str, help='Path to NetVLAD folder',
-                        default="/home/adam/repo/pytorch-NetVlad")
+                        required=True)
     parser.add_argument('--frames_subfolder', type=str, help='Subfolder name for frames',
                         default='reconstruction')
+    parser.add_argument('--outdir', '-o', type=str, help='Output directory for results',
+                        required=True)
     
     # Parse the arguments
     args = parser.parse_args()
@@ -274,7 +276,11 @@ def main():
     # Cast back to standard float32 for the final output
     final_ensemble_matrix = ensemble_matrix.astype(np.float32)
 
-    return final_ensemble_matrix
+    # Save the final ensemble matrix
+    os.makedirs(args.outdir, exist_ok=True)
+    ensemble_path = os.path.join(args.outdir, f"ensemble_distance_{comparison_id}.npy")
+    np.save(ensemble_path, final_ensemble_matrix)
+    print(f"Ensemble distance matrix saved to: {ensemble_path}")
     
 if __name__ == "__main__":
     main()
