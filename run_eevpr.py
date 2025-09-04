@@ -236,8 +236,10 @@ def main():
 
             D = (1 - (tq @ tr.T)).T.cpu().numpy()   # shape (Nr, Nq) as before
 
-            # Save the intemerdiate distance matrix for this pair with unique name
-            D_path = os.path.join(args.outdir, f'{unique_id}.npy') 
+            # Save the intemerdiate distance matrix for this pair with the second last folder name from q_dir and r_dir
+            second_last_folder_q = os.path.basename(os.path.normpath(os.path.dirname(q_dir)))
+            second_last_folder_r = os.path.basename(os.path.normpath(os.path.dirname(r_dir)))
+            D_path = os.path.join(args.outdir, f'{second_last_folder_q}_{second_last_folder_r}.npy') 
             np.save(D_path, D)
 
             del tq, tr
