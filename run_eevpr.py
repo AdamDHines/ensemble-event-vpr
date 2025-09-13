@@ -7,7 +7,6 @@ import numpy as np
 import code_helpers_public as chp 
 
 from tqdm import tqdm
-from read_gps import get_gps
 from correspondence_event_camera_frame_camera import traverse_to_name, video_beginning
 
 def main():
@@ -21,12 +20,9 @@ def main():
     parser.add_argument('--query', '-q', type=str, help='Query traverse name',
                         required=True)
     parser.add_argument('--window_duration', '-w', action=chp.ListOrLiteral, nargs='+', help='Fixed window duration in ms',
-                        default=[250, 500, 750, 1000])
+                        default=[1000, 750, 500, 250])
     parser.add_argument('--num_events_per_pixel', '-n', action=chp.ListOrLiteral, nargs='+', help='Number of events per pixel',
-                        default=[0.2, 0.4, 0.6, 0.8])
-    parser.add_argument('--gps_available', action='store_true', help='Whether GPS data is available',
-                        default=False)
-    parser.add_argument('--gps_format', type=str, help='GPS format')
+                        default=[])
     
     # Directories
     parser.add_argument('--dataset_folder', '-d', type=str, help='Path to dataset folder',
@@ -37,12 +33,9 @@ def main():
                         default='reconstruction')
     parser.add_argument('--outdir', '-o', type=str, help='Output directory for results',
                         required=True)
-    
+
     # Parse the arguments
     args = parser.parse_args()
-
-    # Replace all "." with. "_" for num_events_per_pixel
-    args.num_events_per_pixel = [str(x).replace(".", "_") for x in args.num_events_per_pixel]
 
     # Get the reference and query directories for time windows and number of events per pixel
     reference_window_dirs = [os.path.join(f'{args.dataset_folder}',f'{args.dataset}',f'{args.reference}',f'{args.reference}-{args.frames_subfolder}-{timewindow}',f'{args.frames_subfolder}') for timewindow in args.window_duration]
@@ -66,52 +59,6 @@ def main():
     # Initialize dictionaries to hold the final aligned and lazy-loaded image sets
     images_all_combined_set1 = {}
     images_all_combined_set2 = {}
-
-    # Initialize time offsets. These will be calculated if GPS is available.
-    off_q, off_r = 0.0, 0.0
-
-    if args.gps_available:
-        # --- STRATEGY 1: Determine Global Time Offset using GPS ---
-        print("Performing GPS-based time offset calculation...")
-
-        # 1. Load GPS files
-        reference_dir = os.path.join(args.dataset_folder, args.dataset, args.reference)
-        query_dir     = os.path.join(args.dataset_folder, args.dataset, args.query)
-        ref_gps_files = glob.glob(os.path.join(reference_dir, f'*.{args.gps_format}'))
-        qry_gps_files = glob.glob(os.path.join(query_dir,     f'*.{args.gps_format}'))
-        
-        if not ref_gps_files or not qry_gps_files:
-            raise FileNotFoundError(f"GPS files with format '.{args.gps_format}' not found.")
-
-        x_query = get_gps(qry_gps_files[0]).astype(float)
-        x_ref   = get_gps(ref_gps_files[0]).astype(float)
-
-        # 2. Find spatial correspondence
-        match_q_to_r = []
-        for i, (latlon, _) in enumerate(zip(x_query[:, :2], x_query[:, 2])):
-            if len(match_q_to_r) < 6: lo, hi = 0, int(0.25 * len(x_ref))
-            elif i > 0.5 * len(x_query): lo, hi = match_q_to_r[-5], len(x_ref)
-            else: lo, hi = match_q_to_r[-5], int(0.75 * len(x_ref))
-            j_rel = (np.linalg.norm(x_ref[lo:hi, :2] - latlon, axis=1)).argmin()
-            match_q_to_r.append(lo + j_rel)
-        match_q_to_r = np.asarray(match_q_to_r, dtype=int)
-
-        # 3. Calculate the precise time offsets with robust fallback
-        t_q_rel = x_query[:, 2]
-        t_r_rel = x_ref[match_q_to_r, 2]
-        try:
-            off_q = float(video_beginning[traverse_to_name[args.query]])
-            off_r = float(video_beginning[traverse_to_name[args.reference]])
-            print("Successfully used 'video_beginning' offsets for precise GPS time synchronization.")
-        except (KeyError, AttributeError):
-            print("Warning: Could not find 'video_beginning' offsets. Falling back to median time offset.")
-            off_r_to_q = float(np.median(t_q_rel - t_r_rel))
-            off_q = 0.0
-            off_r = -off_r_to_q
-    else:
-        print("GPS not available. Proceeding with time-based anchor alignment.")
-    
-    # Both paths (GPS and non-GPS) now converge here to create the final timeline.
     if not args.window_duration:
          raise ValueError("Alignment requires at least one --window_duration to be specified as an anchor.")
     anchor_param = args.window_duration[0]
@@ -127,9 +74,9 @@ def main():
     q_times_anchor = chp._abs_times_for_dir(q_anchor_dir)
     r_times_anchor = chp._abs_times_for_dir(r_anchor_dir)
 
-    # 3. Apply the pre-calculated time offsets (they are 0.0 if GPS was not used)
-    q_times_synced = q_times_anchor + off_q
-    r_times_synced = r_times_anchor + off_r
+    # 3. Apply the pre-calculated time offsets
+    q_times_synced = q_times_anchor
+    r_times_synced = r_times_anchor
     
     # 4. Use the robust _pair_canonical function on the now-synchronized dense timelines
     max_dt = getattr(args, 'max_dt', 0.06)
@@ -144,8 +91,8 @@ def main():
     all_ref_dirs = reference_window_dirs + reference_count_dirs
 
     for q_dir, r_dir in zip(all_query_dirs, all_ref_dirs):
-        ts_q = chp._abs_times_for_dir(q_dir) + off_q # Apply offsets here too for consistency
-        ts_r = chp._abs_times_for_dir(r_dir) + off_r
+        ts_q = chp._abs_times_for_dir(q_dir) 
+        ts_r = chp._abs_times_for_dir(r_dir)
 
         matches_q = chp.get_timestamp_matches(ts_q, timestamps_canon_query)
         matches_r = chp.get_timestamp_matches(ts_r, timestamps_canon_ref)
