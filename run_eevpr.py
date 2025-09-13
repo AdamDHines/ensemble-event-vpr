@@ -155,7 +155,7 @@ def main():
             f1_path = os.path.join(pair_dir, "netvlad_features_all_set1.npy")
             f2_path = os.path.join(pair_dir, "netvlad_features_all_set2.npy")
             
-            features_q = chp.get_vlad_features(
+            features_q = chp.get_vlad_features_pytorch(
                                             model,
                                             images_set=imgs_q,        
                                             save_name=f1_path,             
@@ -166,7 +166,7 @@ def main():
                                             target_size=(480, 640),         
                                             mmap_safely=True,                 
                                         )
-            features_r = chp.get_vlad_features(
+            features_r = chp.get_vlad_features_pytorch(
                                             model,
                                             images_set=imgs_r,                 
                                             save_name=f2_path,                 

@@ -398,7 +398,43 @@ class _ImageSetDataset(Dataset):
     def __getitem__(self, idx):
         return self._load_image(self.items[idx])
 
-def get_vlad_features(
+def get_vlad_features(sess, net_out, image_batch, images_set, save_name=None, batch_size=4, tqdm_position=1):
+    if save_name and isfile(save_name):
+        pre_extracted_features = np.load(save_name)
+        if pre_extracted_features.shape[0] == len(images_set):
+            return pre_extracted_features
+        else:
+            print('Warning: shapes of pre_extracted_features and images_set do not match, re-compute!')
+
+    descs = []
+    for batch_offset in tqdm(range(0, len(images_set), batch_size), position=tqdm_position, leave=False):
+    # for batch_offset in range(0, len(images_set), batch_size):
+        images = []
+        for i in range(batch_offset, batch_offset + batch_size):
+            if i == len(images_set):
+                break
+
+            image = images_set[i]
+            if not isinstance(image, (np.ndarray, np.generic) ):
+                image = cv2.imread(image)
+
+            if image_batch.shape[3] == 1:  # grayscale
+                images.append(np.expand_dims(np.expand_dims(image, axis=0), axis=-1))
+            else:  # color
+                image_inference = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                images.append(np.expand_dims(image_inference, axis=0))
+
+        batch = np.concatenate(images, 0)
+        descs = descs + list(sess.run(net_out, feed_dict={image_batch: batch}))
+
+    netvlad_feature_list = np.array(descs)
+
+    if save_name:
+        np.save(save_name, netvlad_feature_list)
+
+    return netvlad_feature_list
+
+def get_vlad_features_pytorch(
     model,
     images_set,
     save_name=None,
